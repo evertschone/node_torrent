@@ -1,0 +1,66 @@
+- automations:
+
+ - serverside code for auto-downloading a query until requirements are met:
+
+ function doChecks(query) {
+	if(existing torrents for query in client){
+		if(existing torrents are still queued and have seeds){ 
+			goTimeout(query) 
+		} else {
+			if(progress == 100) {
+				delete_other_torrents_for_query_from_client(query)
+				mark_query_as_done(query)
+			}else{
+			   if(time since_add > 10mins) {
+				Query.search_again()
+				Query.select_second_best().start_download()
+				goTimeout(query)
+			   } 
+			   //else if(time since_add or last_activity > 30mins) {
+			   //	if(it has no seeds && progress < 50% ){
+			   //		deleteTorrent()
+			   //	}
+			   //	Query.search_again()
+			   //	Query.select_second_best().start_download()
+			   //	goTimeout()
+			   //}
+			}
+		}
+			
+	}else{
+		Query.search_again()
+		Query.select_second_best().start_download()
+		goTimeout(query)
+	}
+}
+
+taskQueue = []
+
+function goTimeout(query) {
+	taskQueue.unshift({for:query.id, task:doChecks(query)})
+}
+
+setInterval(taskQueue.pop().task(), 60000) //start new task every mminute.
+
+mark_query_as_done(query) { removeTasks(taskQueue, query);
+			    query.completed=true, query.downloadedFilePath=torrent.destination
+			  }
+
+
+
+    1. check for existing torrents for query, if true 2. else 3.
+    2. check if existing torrents are still in queue and have seeds, then goto step 5, else check if they are downloading faster than 100kb/s goto step 5, if not, check time since_add or last_activity if > 10mins then goto 4.
+    3. if no running torrents, add the torrent with the most num_seed * 2 + num_leechs, that fits the size profile, and start it.
+    4. if the existing torrent has stalled or not started, check if it has seeds, if doesn't, check completion if < 50% delete it from the client, else leave it, in both cases retrigger the query and add the best torrent of the results that was not added yet.
+    5. wait for a timeout period
+    6. repeat step 1.
+
+
+
+- display:
+
+ - table show all torrent data + always fit screen width
+
+- bugs:
+
+ - torrents already in client can not be added again, need some way to try match result with torrent?
