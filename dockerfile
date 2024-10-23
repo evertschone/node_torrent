@@ -11,11 +11,14 @@ COPY package*.json ./
 RUN npm install
 RUN npm install -g ts-node
 
-# Copy the rest of your application's source code from your host to your image filesystem
+# Install Prisma CLI
+RUN npm install @prisma/client prisma
+
+# Copy the rest of your application code
 COPY . .
 
-# # Copy your SQLite database file
-# COPY prisma/dev.db ./prisma/dev.db
+# Generate Prisma client
+RUN npx prisma generate
 
 # Your app binds to port 3000 so you'll use the EXPOSE instruction to have it mapped by the docker daemon
 EXPOSE 3000
