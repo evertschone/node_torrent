@@ -319,7 +319,19 @@ app.get('/api/torrents/:hash/contents', async (req, res) => {
     const contents = await prisma.torrentContent.findMany({
       where: { torrentId: hash },
     });
-    const serializedContents = contents.map(content => ({
+    const serializedContents = contents.map((content: {
+      id: string;
+      name: string;
+      size: string;
+      progress: number;
+      priority: number;
+      is_seed: boolean;
+      piece_range: string;
+      piece_size: string;
+      availability: number;
+      hardlinkPath: string;
+      torrentId: string | null;
+    }) => ({
       ...content,
       size: content.size.toString(),
     }));
@@ -481,7 +493,19 @@ app.get('/api/availability/:torrentId', async (req, res) => {
         let result: { vId: string, fileName: string, partStates: PartStates[], fileSize: number, pieceSize: number }[] = [];
 
         let offset = parseInt(relatedContents[0].piece_size);
-        relatedContents.forEach(relatedContent => {
+        relatedContents.forEach((relatedContent: {
+          id: string;
+          name: string;
+          size: string;
+          progress: number;
+          priority: number;
+          is_seed: boolean;
+          piece_range: string;
+          piece_size: string;
+          availability: number;
+          hardlinkPath: string;
+          torrentId: string | null;
+        }) => {
           const pieceSize = parseInt(relatedContent.piece_size);
           const [start, end] = JSON.parse(relatedContent.piece_range);
           // console.dir("size " + parseInt(relatedContent.size + ""))
@@ -497,7 +521,7 @@ app.get('/api/availability/:torrentId', async (req, res) => {
             })
           });
 
-          result.push({ vId: relatedContent.id, fileName: relatedContent.name, fileSize: parseInt(relatedContent.size), pieceSize: pieceSize, partStates: partStates})
+          result.push({ vId: relatedContent.id, fileName: relatedContent.name, fileSize: parseInt(relatedContent.size), pieceSize: pieceSize, partStates: partStates })
 
           offset = nextOffset;
           // console.dir("nextOffset " + offset)
@@ -536,7 +560,7 @@ app.get('/api/keyframes/:id', async (req, res) => {
   }
 })
 
-const fixIllegalName = (name:string)=> name.replace(/[<>:"\|?*]/g,"")
+const fixIllegalName = (name: string) => name.replace(/[<>:"\|?*]/g, "")
 
 // Endpoint to stream video file
 app.get('/api/stream/:id', async (req, res) => {
