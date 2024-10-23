@@ -1,12 +1,31 @@
 import { ITorrent } from '../types/Torrent';
 import { QBittorrentTorrentState } from '../qBittorrent/types/QBittorrentTorrentsMethods';
-
-export class Torrent implements ITorrent {
+import { Prisma } from '@prisma/client';
+// class ResultFactory {
+//   static create(data: Prisma.ResultCreateInput): Prisma.ResultCreateInput {
+//     return {
+//       guid: data.guid,
+//       title: data.title,
+//       link: data.link,
+//       magnet: data.magnet,
+//       infoHash: data.infoHash,
+//       info: data.info,
+//       seeders: data.seeders,
+//       leechers: data.leechers,
+//       size: data.size,
+//       age: data.age,
+//       indexer: data.indexer,
+//       search_date: data.search_date ?? new Date(), // Default to current date if not provided
+//       queries: data.queries,
+//     };
+//   }
+// }
+export class TorrentFactory implements Prisma.TorrentCreateInput {
   hash: string;
   name: string;
   category: string;
   added_on: number;
-  total_size: number;
+  total_size: string;
   progress: number;
   time_active: number;
   num_seeds: number;
@@ -15,7 +34,7 @@ export class Torrent implements ITorrent {
   availability: number;
   completion_on: number;
   dlspeed: number;
-  eta: number;
+  eta: string;
   f_l_piece_prio: boolean;
   force_start: boolean;
   last_activity: number;
@@ -25,7 +44,7 @@ export class Torrent implements ITorrent {
   save_path: string;
   seen_complete: number;
   seq_dl: boolean;
-  size: number;
+  size: string;
   state: QBittorrentTorrentState;
   tags: string;
   tracker: string;
@@ -37,7 +56,7 @@ export class Torrent implements ITorrent {
     this.name = torrent.name;
     this.category = torrent.category;
     this.added_on = torrent.added_on;
-    this.total_size = torrent.total_size;
+    this.total_size = ''+torrent.total_size;
     this.progress = torrent.progress;
     this.time_active = torrent.time_active;
     this.num_seeds = torrent.num_seeds;
@@ -46,7 +65,7 @@ export class Torrent implements ITorrent {
     this.availability = torrent.availability;
     this.completion_on = torrent.completion_on;
     this.dlspeed = torrent.dlspeed;
-    this.eta = torrent.eta;
+    this.eta = ''+torrent.eta;
     this.f_l_piece_prio = torrent.f_l_piece_prio;
     this.force_start = torrent.force_start;
     this.last_activity = torrent.last_activity;
@@ -56,7 +75,7 @@ export class Torrent implements ITorrent {
     this.save_path = torrent.save_path;
     this.seen_complete = torrent.seen_complete;
     this.seq_dl = torrent.seq_dl;
-    this.size = torrent.size;
+    this.size = ''+torrent.size;
     this.state = torrent.state;
     this.tags = torrent.tags;
     this.tracker = torrent.tracker;

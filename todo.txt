@@ -59,8 +59,28 @@ mark_query_as_done(query) { removeTasks(taskQueue, query);
 
 - display:
 
- - table show all torrent data + always fit screen width
+ x - table show all torrent data + always fit screen width
 
 - bugs:
 
- - torrents already in client can not be added again, need some way to try match result with torrent?
+ x - torrents already in client can not be added again, need some way to try match result with torrent?
+
+
+
+
+
+
+
+
+ Improvements:
+
+ UI:
+	[] video wall per query group
+	[] use tailwind-UI ( without using vue plugin for educational purposese)
+	[] filters / sorting on query table
+	[] 
+
+ functional:
+
+	[] maybe skip hardlinks except for finished torrents?
+	[] 

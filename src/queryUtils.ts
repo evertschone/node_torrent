@@ -1,11 +1,10 @@
-// queryUtils.ts
-
-import { Query, Result, QueryGroup, Torrent, QueryResult } from './models';
+import { PrismaClient, Prisma, Result } from '@prisma/client';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import { Op } from 'sequelize';
 
 dotenv.config();
+
+const prisma = new PrismaClient();
 
 const config = {
     baseUrl: process.env.PROWLARR_BASE_URL as string,
@@ -68,83 +67,127 @@ async function searchTorrents(query: string, indexerIds: number[]): Promise<any[
     }
 }
 
-async function search_again(query: Query): Promise<Result[]> {
+type QueryWithRelations = Prisma.QueryGetPayload<{
+    include: {
+        queryGroup: true;
+    };
+}>;
+
+
+async function search_again(query: QueryWithRelations): Promise<Result[]> {
     const prowlerTag = (query.prowlerTag || query.queryGroup?.prowlerTag) || config.defaultTag;
-  
+
     let indexerIds: number[] = [];
     if (prowlerTag) {
-      indexerIds = await getIndexerIdsByTag(prowlerTag);
+        indexerIds = await getIndexerIdsByTag(prowlerTag);
     } else if (query.queryGroup?.indexers) {
-      indexerIds = query.queryGroup.indexers.split(',').map(Number);
+        indexerIds = query.queryGroup.indexers.split(',').map(Number);
     }
-  
+
     if (indexerIds.length === 0) {
-      throw new Error('No indexers found for the specified tag or group');
+        throw new Error('No indexers found for the specified tag or group');
     }
-  
+
     const searchResults = await searchTorrents(query.searchQuery, indexerIds);
-  
-    const resultEntries = searchResults.map(result => ({
-      ...result,
-      infoHash: result.infoHash ? result.infoHash.toLowerCase() : null // Ensure infoHash is lowercase
-    }));
-  
-    const createdResults = await Result.bulkCreate(resultEntries, {
-      ignoreDuplicates: true,
-      returning: true, // Ensure created results are returned
-    });
-  
-    // Create associations in the QueryResult table
-    for (const result of createdResults) {
-      await QueryResult.create({ queryId: query.id, guid: result.guid });
+
+    if (searchResults.length === 0) {
+        throw new Error('No search results found');
     }
-  
-    return createdResults;
-  }
 
-async function select_best_not_already_added(query: Query): Promise<Result> {
-    // todo: look for Torrents in client not in torrent DB, or clean up torrent DB first?
-    // eg. deleting a torrent from client manually keeps it in the Torrent DB.
-    const queryResults = await QueryResult.findAll({
-        where: { queryId: query.id },
-        include: [{
-            model: Result,
-            where: { state: { [Op.not]: 'deleted from client' } }
-        }],
+    const resultsToCreate: Prisma.ResultCreateInput[] = searchResults.map(result => ({
+        guid: result.guid,
+        title: result.title,
+        link: result.link,
+        magnet: result.magnet,
+        infoHash: null,
+        resultHash: result.infoHash?.toLowerCase() || null,
+        info: result.info,
+        seeders: result.seeders,
+        leechers: result.leechers,
+        size: result.size.toString(),
+        age: result.age,
+        indexer: result.indexer,
+        search_date: new Date(), // Set the search_date when creating
+        queries: { connect: { id: query.id } },
+    }));
+
+    const createdResults: Result[] = [];
+
+    await prisma.$transaction(async (tx) => {
+        for (const result of resultsToCreate) {
+            // Check if the result already exists
+            const existingResult = await tx.result.findUnique({
+                where: { guid: result.guid },
+                include: { queries: true },
+            });
+
+            if (existingResult) {
+                // Update existing result with new query connection
+                await tx.result.update({
+                    where: { guid: result.guid },
+                    data: {
+                        queries: {
+                            connect: { id: query.id },
+                        },
+                    },
+                });
+                createdResults.push(existingResult);
+            } else {
+                // Create new result
+                const newResult = await tx.result.create({
+                    data: result,
+                });
+                createdResults.push(newResult);
+            }
+        }
     });
-    // Type assertion to ensure the correct type is used
-    const results = queryResults.map(qr => (qr as any).Result as Result);
 
-    let resultHashes = results.map(r => r.infoHash);
+    // Debugging: Log the createdResults
+    console.log('Created Results:', createdResults.map((r=> r.guid)));
+
+    return createdResults;
+}
+
+async function select_best_not_already_added(query: QueryWithRelations) {
+    const queryResults = await prisma.query.findUnique({
+        where: { id: query.id },
+        include: {
+            results: true
+        }
+    });
+
+    const results = queryResults?.results?.filter(result => result.state !== 'deleted from client');
+
+
+    let resultHashes = results?.map(r => r.infoHash).filter((r) => r !== null)
 
     // Fetch torrents that are already added
-    const torrentResults = await Torrent.findAll({
-        where: { hash: { [Op.in]: resultHashes } },
+    const torrentResults = await prisma.torrent.findMany({
+        where: { hash: { in: resultHashes } },
     });
 
     let torrentHashes = torrentResults.map(r => r.hash);
-    const notAddedResults = results.filter(result => result.infoHash && !torrentHashes.includes(result.infoHash));
+    const notAddedResults = results?.filter(result => result.infoHash && !torrentHashes.includes(result.infoHash));
 
-    const filteredResults = notAddedResults.filter(result => {
+    const filteredResults = notAddedResults?.filter(result => {
         const titleIncludeRegex = query.includesRegex || query.queryGroup?.includesRegex;
         const titleExcludeRegex = query.excludesRegex || query.queryGroup?.excludesRegex;
         const targetQuality = query.targetQuality || query.queryGroup?.targetQuality;
 
         const includeMatch = titleIncludeRegex ? new RegExp(titleIncludeRegex, "i").test(result.title) : true;
         const excludeMatch = titleExcludeRegex ? !new RegExp(titleExcludeRegex, "i").test(result.title) : true;
-        // const qualityMatch = targetQuality ? result.quality === targetQuality : true;
 
-        return includeMatch && excludeMatch
-        //  && qualityMatch;
+        return includeMatch && excludeMatch;
     });
 
-    const getScore = (r: Result) => { return (r.seeders >= 1 ? 1 : 0.5) * (r.seeders * 2 + ((r.seeders / (r.leechers + 1)) * (r.leechers + r.seeders))) }
+    const getScore = (r: Prisma.ResultCreateInput) =>
+        (r.seeders >= 1 ? 1 : 0.5) * (r.seeders * 2 + ((r.seeders / (r.leechers + 1)) * (r.leechers + r.seeders)));
 
-    filteredResults.sort((a, b) => {
+    filteredResults?.sort((a, b) => {
         return getScore(b) - getScore(a);
     });
 
-    return filteredResults[0] || null;
+    return filteredResults?.[0] || null;
 }
 
 export { search_again, select_best_not_already_added };

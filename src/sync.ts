@@ -27,4 +27,4 @@ async function syncDatabase() {
   }
 }
 
-syncDatabase();
+// syncDatabase();

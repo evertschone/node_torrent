@@ -1,0 +1,113 @@
+datasource db {
+  provider = "sqlite" // or "postgresql" if you are using PostgreSQL
+  url      = "file:./dev.db" // or your PostgreSQL connection string
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model GlobalSettings {
+  key   String @id
+  value String
+}
+
+model QueryGroup {
+  id              Int     @id @default(autoincrement())
+  name            String
+  sourceUrl       String?
+  scraperUrl      String?
+  prowlerTag      String?
+  indexers        String?
+  targetQuality   String?
+  searchFrequency Int?
+  includesRegex   String?
+  excludesRegex   String?
+  queries         Query[]
+  date            DateTime @default(now())
+}
+
+model Query {
+  id               Int             @id @default(autoincrement())
+  searchQuery      String
+  prowlerTag       String?
+  targetQuality    String?
+  searchFrequency  Int?
+  includesRegex    String?
+  excludesRegex    String?
+  loopRunning      Boolean         @default(false)
+  downloadComplete Boolean         @default(false)
+  queryGroupId     Int?
+  queryGroup       QueryGroup?     @relation(fields: [queryGroupId], references: [id])
+  results          Result[]        @relation("QueryResults")
+  date             DateTime        @default(now())
+}
+
+
+model Result {
+  guid              String   @id
+  title             String
+  link              String?
+  magnet            String?
+  info              String?
+  seeders           Int
+  leechers          Int
+  size              String
+  age               Int?
+  indexer           String?
+  downloading       Boolean  @default(false)
+  state             String   @default("")
+  infoHash          String?
+  resultHash        String?
+  search_date       DateTime @default(now())
+  queries           Query[]  @relation("QueryResults")
+  torrent           Torrent? @relation(fields: [infoHash], references: [hash])
+}
+
+model Torrent {
+  hash           String           @id
+  name           String
+  category       String
+  added_on       Int
+  total_size     String
+  progress       Float
+  time_active    Int
+  num_seeds      Int
+  num_leechs     Int
+  availability   Float
+  completion_on  Int
+  dlspeed        Int
+  eta            String
+  f_l_piece_prio Boolean
+  force_start    Boolean
+  last_activity  Int
+  num_complete   Int
+  num_incomplete Int
+  priority       Int
+  save_path      String
+  seen_complete  Int
+  seq_dl         Boolean
+  size           String
+  state          String
+  tags           String
+  tracker        String
+  upspeed        Int
+  piece_states   String
+  results        Result[]
+  contents       TorrentContent[]
+}
+
+model TorrentContent {
+  id           String  @id
+  name         String
+  size         String
+  progress     Float
+  priority     Int
+  is_seed      Boolean
+  piece_range  String
+  piece_size   String @default("1024")
+  availability Float
+  hardlinkPath String
+  torrentId    String?
+  torrent      Torrent? @relation(fields: [torrentId], references: [hash])
+}

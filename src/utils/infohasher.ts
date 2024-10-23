@@ -12,7 +12,7 @@ export class TorrentParser {
     return await (new Promise((res, rej) => {
       try {
         remote(uri, (err: Error, parsedTorrent) => {
-          if (err) { rej(err); throw err }
+          if (err) { rej(err); console.error(err) }
           if (parsedTorrent) {
             this.uri = uri;
             this.parsedTorr = parsedTorrent;

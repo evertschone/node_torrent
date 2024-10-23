@@ -1,0 +1,369 @@
+import { Table, Column, Model, DataType, ForeignKey, BelongsTo } from 'sequelize-typescript';
+import { QueryGroup } from './QueryGroup';
+import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+
+@Table({
+  timestamps: false,
+})
+export class GlobalSettings extends Model<InferAttributes<GlobalSettings>, InferCreationAttributes<GlobalSettings>> {
+  @Column({
+    type: DataType.STRING,
+    primaryKey: true,
+  })
+  key!: string;
+
+  @Column(DataType.STRING)
+  value!: string;
+}
+
+
+
+import { Table, Column, Model, DataType, ForeignKey, BelongsTo, BelongsToMany } from 'sequelize-typescript';
+import { QueryGroup, QueryResult, Result } from './index';
+import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+
+@Table({
+  timestamps: false,
+})
+export class Query extends Model<InferAttributes<Query>, InferCreationAttributes<Query>> {
+  @Column({
+    type: DataType.INTEGER,
+    autoIncrement: true,
+    primaryKey: true,
+  })
+  id!: number;
+
+  @Column(DataType.STRING)
+  searchQuery!: string;
+
+  @Column(DataType.STRING)
+  prowlerTag!: string;
+
+  @Column(DataType.STRING)
+  targetQuality!: string;
+
+  @Column(DataType.INTEGER)
+  searchFrequency!: number;
+
+  @Column(DataType.STRING)
+  includesRegex!: string;
+
+  @Column(DataType.STRING)
+  excludesRegex!: string;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    defaultValue: false
+  })
+  loopRunning!: boolean;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    defaultValue: false
+  })
+  downloadComplete!: boolean;
+
+  @ForeignKey(() => QueryGroup)
+  @Column(DataType.INTEGER)
+  queryGroupId!: number | null;
+
+  @BelongsTo(() => QueryGroup, { foreignKey: 'queryGroupId', constraints: false })
+  queryGroup!: QueryGroup | null;
+
+  @BelongsToMany(() => Result, () => QueryResult)
+  results!: Result[];
+}
+
+
+import { Table, Column, Model, DataType, HasMany } from 'sequelize-typescript';
+import { Query } from './Query';
+import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+
+@Table({
+  timestamps: false,
+})
+export class QueryGroup extends Model<InferAttributes<QueryGroup>, InferCreationAttributes<QueryGroup>> {
+  @Column({
+    type: DataType.INTEGER,
+    autoIncrement: true,
+    primaryKey: true,
+  })
+  id!: number;
+
+  @Column(DataType.STRING)
+  name!: string;
+
+  @Column(DataType.STRING)
+  sourceUrl!: string;
+
+  @Column(DataType.STRING)
+  scraperUrl!: string;
+
+  @Column(DataType.STRING)
+  prowlerTag!: string;
+
+  @Column(DataType.STRING)
+  indexers!: string;
+
+  @Column(DataType.STRING)
+  targetQuality!: string;
+
+  @Column(DataType.INTEGER)
+  searchFrequency!: number;
+
+  @Column(DataType.STRING)
+  includesRegex!: string;
+
+  @Column(DataType.STRING)
+  excludesRegex!: string;
+
+  @HasMany(() => Query, { foreignKey: 'queryGroupId', constraints: false })
+  queries!: Query[];
+}
+
+
+import { Model, Table, Column, ForeignKey } from 'sequelize-typescript';
+import { Query } from './Query'; // Adjust the import based on your project structure
+import { Result } from './Result'; // Adjust the import based on your project structure
+import { InferAttributes, InferCreationAttributes } from 'sequelize';
+
+@Table
+export class QueryResult extends Model<InferAttributes<QueryResult>, InferCreationAttributes<QueryResult>> {
+    @ForeignKey(() => Query)
+    @Column
+    queryId!: number;
+
+    @ForeignKey(() => Result)
+    @Column
+    guid!: string;
+}
+
+
+import { Table, Column, Model, DataType, ForeignKey, BelongsTo, HasMany, BelongsToMany } from 'sequelize-typescript';
+import { Query, Torrent, QueryResult } from './index';
+import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+
+@Table({
+  timestamps: true,
+})
+export class Result extends Model<InferAttributes<Result>, InferCreationAttributes<Result>> {
+  @Column({
+    type: DataType.TEXT,
+    primaryKey: true,
+  })
+  guid!: string;
+
+  @Column(DataType.STRING)
+  title!: string;
+
+  @Column(DataType.TEXT)
+  link!: string;
+
+  @Column(DataType.TEXT)
+  magnet!: string;
+
+  @Column(DataType.STRING)
+  info!: string;
+
+  @Column(DataType.INTEGER)
+  seeders!: number;
+
+  @Column(DataType.INTEGER)
+  leechers!: number;
+
+  @Column(DataType.INTEGER)
+  size!: number;
+
+  @Column(DataType.STRING)
+  age!: string;
+
+  @Column(DataType.STRING)
+  indexer!: string;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    defaultValue: false,
+  })
+  downloading!: boolean;
+
+  @Column({
+    type: DataType.STRING,
+    defaultValue: '',
+  })
+  state!: string;
+
+  @Column(DataType.STRING)
+  infoHash!: string;
+
+  @BelongsToMany(() => Query, () => QueryResult)
+  queries!: Query[];
+
+  @BelongsTo(() => Torrent, { foreignKey: 'infoHash', targetKey: 'hash', constraints: false })
+  torrent!: CreationOptional<Torrent>;
+}
+
+import { Table, Column, Model, DataType, ForeignKey, BelongsTo, HasMany } from 'sequelize-typescript';
+import { Result } from './Result';
+import { type CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+import { QBittorrentTorrentState } from '../qBittorrent/types/QBittorrentTorrentsMethods';
+import { ITorrent } from '../types/Torrent';
+import { TorrentContent } from './TorrentContent';
+
+@Table({
+  timestamps: false,
+})
+export class Torrent extends Model<ITorrent> {
+  @Column({
+    type: DataType.STRING,
+    primaryKey: true,
+  })
+  hash!: string;
+
+  @Column(DataType.STRING)
+  name!: string;
+
+  @Column(DataType.STRING)
+  category!: string;
+
+  @Column(DataType.DATE)
+  added_on!: Date;
+
+  @Column(DataType.INTEGER)
+  total_size!: number;
+
+  @Column(DataType.FLOAT)
+  progress!: number;
+
+  @Column(DataType.INTEGER)
+  time_active!: number;
+
+  @Column(DataType.INTEGER)
+  num_seeds!: number;
+
+  @Column(DataType.INTEGER)
+  num_leechs!: number;
+
+  @HasMany(() => Result, { foreignKey: 'infoHash', sourceKey: 'hash' })
+  results!: Result[];
+
+  // Additional columns based on QBittorrentTorrentInfo
+
+  @Column(DataType.FLOAT)
+  availability!: number;
+
+  @Column(DataType.DATE)
+  completion_on!: Date;
+
+  @Column(DataType.INTEGER)
+  dlspeed!: number;
+
+  @Column(DataType.INTEGER)
+  eta!: number;
+
+  @Column(DataType.BOOLEAN)
+  f_l_piece_prio!: boolean;
+
+  @Column(DataType.BOOLEAN)
+  force_start!: boolean;
+
+  @Column(DataType.DATE)
+  last_activity!: Date;
+
+  @Column(DataType.INTEGER)
+  num_complete!: number;
+
+  @Column(DataType.INTEGER)
+  num_incomplete!: number;
+
+  @Column(DataType.INTEGER)
+  priority!: number;
+
+  @Column(DataType.STRING)
+  save_path!: string;
+
+  @Column(DataType.DATE)
+  seen_complete!: Date;
+
+  @Column(DataType.BOOLEAN)
+  seq_dl!: boolean;
+
+  @Column(DataType.INTEGER)
+  size!: number;
+
+  @Column(DataType.STRING)
+  state!: QBittorrentTorrentState; //string; // Assuming QBittorrentTorrentState type is a string enum
+
+  @Column(DataType.STRING)
+  tags!: string;
+
+  @Column(DataType.STRING)
+  tracker!: string;
+
+  @Column(DataType.INTEGER)
+  upspeed!: number;
+
+  @Column(DataType.STRING)
+  piece_states!: string;
+
+  @HasMany(() => TorrentContent)
+  contents!: CreationOptional<TorrentContent[]>;
+}
+
+
+import { Table, Column, Model, DataType, ForeignKey, BelongsTo } from 'sequelize-typescript';
+import { Torrent } from './Torrent';
+import { CreationOptional, InferAttributes, InferCreationAttributes } from 'sequelize/types/model';
+
+export enum QBittorrentTorrentContentPriority {
+  DO_NOT_DOWNLOAD = 0,
+  NORMAL = 1,
+  HIGH = 6,
+  MAXIMUM = 7,
+}
+
+@Table({
+  timestamps: false,
+})
+export class TorrentContent extends Model<InferAttributes<TorrentContent>, InferCreationAttributes<TorrentContent>> {
+  @Column({
+    type: DataType.STRING,
+    primaryKey: true,
+  })
+  id!: CreationOptional<string>;
+
+  @Column(DataType.STRING)
+  name!: string;
+
+  @Column(DataType.BIGINT)
+  size!: number;
+
+  @Column(DataType.FLOAT)
+  progress!: number;
+
+  @Column(DataType.STRING) //(QBittorrentTorrentContentPriority.DO_NOT_DOWNLOAD, QBittorrentTorrentContentPriority.NORMAL, QBittorrentTorrentContentPriority.HIGH, QBittorrentTorrentContentPriority.MAXIMUM))
+  priority!: QBittorrentTorrentContentPriority;
+
+  @Column(DataType.BOOLEAN)
+  is_seed!: boolean;
+
+  @Column(DataType.STRING)
+  piece_range!: string;
+
+//   @Column(DataType.STRING)
+//   piece_states!: string;
+
+  @Column(DataType.FLOAT)
+  availability!: number;
+
+  @Column(DataType.STRING)
+  hardlinkPath!: string;
+
+  @ForeignKey(() => Torrent)
+  @Column(DataType.STRING)
+  torrentId!: CreationOptional<string>;
+
+  @BelongsTo(() => Torrent)
+  torrent!: CreationOptional<Torrent>;
+}
+
+

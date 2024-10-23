@@ -1,9 +1,15 @@
-// eventLoopManager.ts
-
-import { GlobalSettings, Query, Result, Torrent } from './models';
+import { PrismaClient, Query, Result, Torrent, GlobalSettings, Prisma } from '@prisma/client';
 import { QBittorrentTorrentState } from './qBittorrent/types/QBittorrentTorrentsMethods';
 import qBittorrent, { addTorrentFromResult } from './qbittorrent';
 import { search_again, select_best_not_already_added } from './queryUtils';
+
+const prisma = new PrismaClient();
+
+type QueryWithRelations = Prisma.QueryGetPayload<{
+    include: {
+        queryGroup: true;
+    };
+}>;
 
 interface Task {
     queryId: number;
@@ -13,12 +19,12 @@ interface Task {
 const taskQueue: Task[] = [];
 let interval: NodeJS.Timeout | null = null;
 
-async function doChecks(query: Query): Promise<void> {
+async function doChecks(query: QueryWithRelations): Promise<void> {
     const log = (message: string) => {
         console.log(`[${new Date().toISOString()}] ${message}`);
     };
 
-    log(`0 . Starting doChecks for query ID: ${query.id} with search query: ${query.searchQuery}`);
+    log(`0. Starting doChecks for query ID: ${query.id} with search query: ${query.searchQuery}`);
 
     try {
         const torrents = await qBittorrent.getTorrentStatuses({ queryId: '' + query.id });
@@ -87,11 +93,11 @@ async function doChecks(query: Query): Promise<void> {
     }
 }
 
-async function performSearchAndDownload(query: Query): Promise<void> {
+async function performSearchAndDownload(query: QueryWithRelations): Promise<void> {
     await search_again(query);
     const bestResult = await select_best_not_already_added(query);
     if (bestResult) {
-        console.log(bestResult.title, bestResult.infoHash)
+        console.log(bestResult.title, bestResult.infoHash);
         await addTorrentFromResult(bestResult.guid);
     }
 }
@@ -102,7 +108,7 @@ async function deleteOtherTorrentsForQuery(query: Query): Promise<void> {
     for (const torrent of torrents) {
         if (torrent.hash !== completedTorrent?.hash &&  // not completed one
             (torrent.size <= (completedTorrent?.size || 1000) && ((torrent.dlspeed > 10 && torrent.progress > 0.1) // and smaller than completed one and still downloading
-            || torrent.progress == 1))) {   // or smaller than completed and previously completed
+                || torrent.progress === 1))) {   // or smaller than completed and previously completed
             await qBittorrent.removeTorrent(torrent.hash);
         }
         // ensure bigger torrents that are in progress will continue, and may delete the currently finished one when done. (except that the queries eventloop will stop, so that is a todo..)
@@ -110,9 +116,13 @@ async function deleteOtherTorrentsForQuery(query: Query): Promise<void> {
 }
 
 async function markQueryAsDone(query: Query, destination: string): Promise<void> {
-    query.downloadComplete = true;
-    query.loopRunning = false;
-    await query.save();
+    await prisma.query.update({
+        where: { id: query.id },
+        data: {
+            downloadComplete: true,
+            loopRunning: false,
+        },
+    });
     removeTasks(query.id);
 }
 
@@ -120,7 +130,7 @@ function goTimeout(queryId: number): void {
     taskQueue.unshift({
         queryId,
         task: async () => {
-            const query = await Query.findByPk(queryId);
+            const query = await prisma.query.findUnique({ where: { id: queryId }, include: { queryGroup: true } });
             if (query) {
                 await doChecks(query);
             }
@@ -145,7 +155,11 @@ export async function startEventLoop(): Promise<void> {
         }, 30000);
 
         // Persist the state of the global event loop
-        await GlobalSettings.upsert({ key: 'globalEventLoopRunning', value: 'true' });
+        await prisma.globalSettings.upsert({
+            where: { key: 'globalEventLoopRunning' },
+            update: { value: 'true' },
+            create: { key: 'globalEventLoopRunning', value: 'true' },
+        });
     }
 }
 
@@ -155,39 +169,47 @@ export async function stopEventLoop(): Promise<void> {
         interval = null;
 
         // Persist the state of the global event loop
-        await GlobalSettings.upsert({ key: 'globalEventLoopRunning', value: 'false' });
+        await prisma.globalSettings.upsert({
+            where: { key: 'globalEventLoopRunning' },
+            update: { value: 'false' },
+            create: { key: 'globalEventLoopRunning', value: 'false' },
+        });
     }
 }
 
 export async function startQueryLoop(queryId: number): Promise<void> {
-    const query = await Query.findByPk(queryId);
+    const query = await prisma.query.findUnique({ where: { id: queryId } });
     if (query) {
-        query.loopRunning = true;
-        await query.save();
+        await prisma.query.update({
+            where: { id: queryId },
+            data: { loopRunning: true },
+        });
         goTimeout(queryId);
     }
 }
 
 export async function stopQueryLoop(queryId: number): Promise<void> {
-    const query = await Query.findByPk(queryId);
+    const query = await prisma.query.findUnique({ where: { id: queryId } });
     if (query) {
-        query.loopRunning = false;
-        await query.save();
+        await prisma.query.update({
+            where: { id: queryId },
+            data: { loopRunning: false },
+        });
         removeTasks(queryId);
     }
 }
 
 export async function initializeEventLoops(): Promise<void> {
     // Restart the global event loop if it was running
-    const globalEventLoopSetting = await GlobalSettings.findByPk('globalEventLoopRunning');
+    const globalEventLoopSetting = await prisma.globalSettings.findUnique({ where: { key: 'globalEventLoopRunning' } });
     if (globalEventLoopSetting && globalEventLoopSetting.value === 'true') {
         await startEventLoop();
     }
 
     // Restart query loops for queries that were running
-    const runningQueries = await Query.findAll({ where: { loopRunning: true } });
+    const runningQueries = await prisma.query.findMany({ where: { loopRunning: true } });
     for (const query of runningQueries) {
-        startQueryLoop(query.id);
+        await startQueryLoop(query.id);
     }
 }
 

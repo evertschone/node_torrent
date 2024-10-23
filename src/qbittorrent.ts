@@ -1,15 +1,15 @@
-import { Torrent, Result, Query, QueryGroup, QueryResult } from './models';
 import dotenv from 'dotenv';
 import ClientRequestManager from './qBittorrent/clientRequestManager';
 import type { QBittorrentConnectionSettings } from './qBittorrent/clientConnectionSettings';
-// import { InferCreationAttributes } from 'sequelize';
-// import { Torrent as TorrentClass } from './classes/Torrent';
 import { ITorrent } from './types/Torrent';
 import request from 'request';
-// import fetch from 'node-fetch';
-
 import fs from 'fs';
 import path from 'path';
+import { PrismaClient, Prisma } from '@prisma/client';
+import { TorrentParser } from './utils/infohasher';
+import axios from 'axios';
+import settingsService from './utils/SettingsService';
+import { TorrentFactory } from './classes/Torrent';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -21,32 +21,30 @@ const qBittorrentConfig: QBittorrentConnectionSettings = {
   version: 1,
   url: process.env.QBITTORRENT_BASE_URL as string,
   username: process.env.QBITTORRENT_USERNAME as string,
-  password: process.env.QBITTORRENT_PASSWORD as string
+  password: process.env.QBITTORRENT_PASSWORD as string,
 };
 
 // Create an instance of ClientRequestManager
-const client = new ClientRequestManager(qBittorrentConfig);
+export const client = new ClientRequestManager(qBittorrentConfig);
 
-import { TorrentParser } from './utils/infohasher'
-import axios, { AxiosError } from 'axios';
-import sequelize, { InferCreationAttributes, Op } from 'sequelize';
-import { TorrentContent } from './models/TorrentContent';
-import settingsService from './utils/SettingsService';
+// Create an instance of PrismaClient
+const prisma = new PrismaClient();
+
 const torrentParserInstance = new TorrentParser();
 
 const getInfoHashFromTorrentUri = async (uri: string) => {
   try {
-    return torrentParserInstance.getHash(await torrentParserInstance.parseTorrent(uri))
+    return torrentParserInstance.getHash(await torrentParserInstance.parseTorrent(uri));
   } catch {
-    console.log("couldnt parse torrent: " + uri)
+    console.log("couldn't parse torrent: " + uri);
   }
-}
+};
 
 async function findRedirectUrl(startUrl: string): Promise<string> {
   let finalUrl = startUrl;
 
   try {
-    finalUrl = await new Promise<string>((resolve, rej) => {
+    finalUrl = await new Promise<string>((resolve, reject) => {
       request({ url: startUrl, followRedirect: false },
         (err, res, body) => {
           console.log(res.headers.location);
@@ -56,7 +54,7 @@ async function findRedirectUrl(startUrl: string): Promise<string> {
             resolve(startUrl);
           }
         })
-    })
+    });
   } catch (error: any) {
     console.error('Error:', error.message);
     finalUrl = startUrl; // In case of an error, return the original URL
@@ -67,32 +65,26 @@ async function findRedirectUrl(startUrl: string): Promise<string> {
 export async function addTorrentFromResult(guid: string): Promise<any> {
   try {
     // Find the result by guid
-    const result = await Result.findOne({
+    const result = await prisma.result.findUnique({
       where: { guid },
-      include: [
-        {
-          model: Query,
-          attributes: ["searchQuery", "id"],
-          include: [
-            {
-              model: QueryGroup,
-              attributes: ["name", "id"]
-            }
-          ],
-          through: { attributes: [] } // Exclude junction table attributes
+      include: {
+        queries: {
+          include: {
+            queryGroup: true,
+          }
         }
-      ]
+      }
     });
     if (!result) {
       throw new Error('Result not found');
     }
 
     // Check for magnet link, else use .torrent link
-    let prowlink = result.magnet ? result.magnet : result.link;
-    let link = await findRedirectUrl(prowlink); // Follow redirects, e.g., to magnet links.
+    let prowlink = result?.magnet ? result.magnet : result.link;
 
+    let link = prowlink ? await findRedirectUrl(prowlink) : ''; // Follow redirects, e.g., to magnet links.
     // Extract info hash from the magnet link
-    let infoHash: null | string = result.infoHash && result.infoHash?.toLowerCase()
+    let infoHash: null | string = result.infoHash && result.infoHash?.toLowerCase();
     let infoHashTr = infoHash;
     infoHash = await getInfoHashFromTorrentUri(link) || null;
     if (!infoHash && result.magnet) {
@@ -112,17 +104,30 @@ export async function addTorrentFromResult(guid: string): Promise<any> {
         return;
       }
 
-      const torrentObj: ITorrent = {
-        ...torrent,
-        resultGuid: result.guid
+      const torrentObj: Prisma.TorrentCreateInput = {
+        ...torrent
       };
-      const torrentRow = await Torrent.upsert(torrentObj);
+      const torrentRow = await prisma.torrent.upsert({
+        where: { hash: torrentObj.hash },
+        update: torrentObj,
+        create: torrentObj,
+      });
 
       // Update the Result to set downloading to true, and add infohash in case it was retrieved.
-      await result.update({ infoHash, downloading: false, state: 'added' });
+      await prisma.result.update({
+        where: { guid },
+        data: { infoHash, resultHash: infoHash, downloading: false, state: 'added' },
+      });
 
       // Create the association between the result and the torrent
-      await result.$set('torrent', torrentRow[0]);
+      await prisma.result.update({
+        where: { guid },
+        data: {
+          torrent: {
+            connect: { hash: torrentRow.hash },
+          },
+        },
+      });
 
       await startTorrent(infoHash);
 
@@ -134,30 +139,48 @@ export async function addTorrentFromResult(guid: string): Promise<any> {
   }
 }
 
-async function updateTorrentContents(hash: string): Promise<void> {
+
+export async function updateTorrentContents(hash: string): Promise<void> {
   try {
     const contents = await client.getTorrentContents(hash);
     const pieceStates = await client.getPieceStates(hash);
+    const pieceProps = await client.getTorrentProperties(hash);
     let idx = 0;
     for (const content of contents) {
-      await TorrentContent.upsert({
-        id: hash + "_" + idx,
-        name: content.name,
-        size: content.size,
-        progress: content.progress,
-        priority: content.priority,
-        is_seed: content.is_seed,
-        piece_range: JSON.stringify(content.piece_range),
-        availability: content.availability,
-        hardlinkPath: '', // or populate if available
-        torrentId: hash // Assuming torrentId is the hash
+      await prisma.torrentContent.upsert({
+        where: { id: hash + "_" + idx },
+        update: {
+          name: content.name,
+          size: content.size.toString(),
+          progress: content.progress,
+          priority: content.priority,
+          is_seed: content.is_seed ?? false, // Provide a default value or handle appropriately
+          piece_range: JSON.stringify(content.piece_range),
+          piece_size: '' + pieceProps.piece_size,
+          availability: content.availability,
+          torrentId: hash,
+        },
+        create: {
+          id: hash + "_" + idx,
+          name: content.name,
+          size: content.size.toString(),
+          progress: content.progress,
+          priority: content.priority,
+          is_seed: content.is_seed ?? false, // Provide a default value or handle appropriately
+          piece_range: JSON.stringify(content.piece_range),
+          piece_size: '' + pieceProps.piece_size,
+          availability: content.availability,
+          hardlinkPath: '', // or populate if available
+          torrentId: hash,
+        }
       });
-      idx++
-    };
+      idx++;
+    }
 
-    await Torrent.update({
-      piece_states: JSON.stringify(pieceStates)
-    }, { where: { hash } })
+    await prisma.torrent.update({
+      where: { hash },
+      data: { piece_states: JSON.stringify(pieceStates) },
+    });
   } catch (error) {
     console.error('Error fetching or updating torrent contents:', error);
   }
@@ -166,9 +189,9 @@ async function updateTorrentContents(hash: string): Promise<void> {
 async function pollForTorrentDownloadStart(callback: (hash: string, resultGuid: string) => void, interval = 5000): Promise<void> {
   const checkDownloadStarted = async (): Promise<void> => {
     try {
-      const addedResults = await Result.findAll({
+      const addedResults = await prisma.result.findMany({
         where: { state: 'added', downloading: false },
-        include: { model: Torrent }
+        include: { torrent: true }
       });
 
       if (addedResults.length === 0) {
@@ -186,20 +209,23 @@ async function pollForTorrentDownloadStart(callback: (hash: string, resultGuid: 
         }
 
         if (['downloading', 'checking', 'seeding'].includes(info.state)) {
-          await Torrent.update(
-            { ...info },
-            { where: { hash: info.hash } }
-          );
-          await Result.update(
-            { state: 'added', downloading: true },
-            { where: { infoHash: info.hash } }
-          );
-
-          // Call the callback to handle the torrent that started downloading
-          callback(info.hash, result.guid);
-
+          let itorr = new TorrentFactory(info);
+          // update torrent
+          await prisma.torrent.update({
+            where: { hash: info.hash },
+            data: itorr,
+          });
           // Update torrent contents
           await updateTorrentContents(info.hash);
+
+          // update all results matching the torrent
+          await prisma.result.updateMany({
+            where: { infoHash: info.hash },
+            data: { state: 'added', downloading: true },
+          });
+
+          // Call the callback to further handle the torrent that started downloading ( eg. used for hardlinking files)
+          callback(info.hash, result.guid);
         }
       }
 
@@ -207,10 +233,10 @@ async function pollForTorrentDownloadStart(callback: (hash: string, resultGuid: 
         const tiHashes = torrentInfos.map((ti) => ti.hash);
         const missingHashes = hashes.filter((h) => h && !tiHashes.includes(h));
         for (const hash of missingHashes) {
-          await Result.update(
-            { state: 'deleted from client', downloading: false },
-            { where: { infoHash: hash } }
-          );
+          await prisma.result.updateMany({
+            where: { infoHash: hash },
+            data: { state: 'deleted from client', downloading: false },
+          });
         }
       }
     } catch (error) {
@@ -226,7 +252,7 @@ async function pollForTorrentDownloadStart(callback: (hash: string, resultGuid: 
   }
 }
 
-async function addTorrent(magnetUrl: string, infoHash: string, category?: string): Promise<ITorrent | null> {
+async function addTorrent(magnetUrl: string, infoHash: string, category?: string): Promise<Prisma.TorrentCreateInput | null> {
   try {
     await client.updateAuthCookie(qBittorrentConfig); // Ensure authentication
 
@@ -237,10 +263,7 @@ async function addTorrent(magnetUrl: string, infoHash: string, category?: string
     console.log(`Download category is: ${category}`);
 
     // Add the torrent
-    await client.torrentsAddURLs([magnetUrl], { category: category, sequentialDownload: true, firstLastPiecePrio: true, savepath: downloadBaseDir });
-
-    // Extract info hash from the magnet link
-    //const infoHash = getInfoHashFromMagnet(magnetUrl);
+    await client.torrentsAddURLs([magnetUrl], { category: category, sequentialDownload: settingsService.getSetting('sequentialDownload') == 'true' || false, firstLastPiecePrio: true, savepath: downloadBaseDir });
 
     // Poll for the torrent until it appears in the client
     const torrent = await pollForTorrentExistInClient(infoHash);
@@ -251,15 +274,16 @@ async function addTorrent(magnetUrl: string, infoHash: string, category?: string
   }
 }
 
-async function pollForTorrentExistInClient(infoHash: string): Promise<ITorrent | undefined> {
-  const pollInterval = 2000; // 1 second
-  const maxRetries = 30; // 30 seconds
+async function pollForTorrentExistInClient(infoHash: string): Promise<Prisma.TorrentCreateInput | undefined> {
+  const pollInterval = 2000; // 2 seconds
+  const maxRetries = 30; // 60 seconds
 
   for (let i = 0; i < maxRetries; i++) {
     const torrents = await client.getTorrentInfos({ hashes: infoHash });
     const torrent = torrents.find(t => t.hash === infoHash);
     if (torrent) {
-      return torrent;
+      let dbTorrent = new TorrentFactory(torrent);
+      return { ...dbTorrent, piece_states: "" };
     }
     await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
@@ -285,17 +309,22 @@ async function stopTorrent(hash: string): Promise<void> {
     console.log('Torrent stopped successfully');
 
     // Update torrent in database
-    await Torrent.update({ state: 'pausedDL' }, { where: { hash } });
+    await prisma.torrent.update({
+      where: { hash },
+      data: { state: 'pausedDL' },
+    });
 
-    const results = await Result.findAll({ where: { infoHash: hash } });
+    const results = await prisma.result.findMany({ where: { infoHash: hash } });
     if (!results?.length) {
       console.error('Result not found');
     } else {
-      results.forEach(async (result) => {
-        await result.update({ downloading: false });
-      })
+      for (const result of results) {
+        await prisma.result.update({
+          where: { guid: result.guid },
+          data: { downloading: false },
+        });
+      }
     }
-
   } catch (error) {
     console.error('Error stopping torrent:', (error as Error).message);
     throw error; // Ensure the error is propagated
@@ -309,9 +338,9 @@ async function startTorrent(hash: string): Promise<void> {
     console.log('Torrent resumed successfully');
 
     // Update torrent in database
-    // await Torrent.update({ state: 'downloading' }, { where: { hash } });
+    // await prisma.torrent.update({ data: { state: 'downloading' }, where: { hash } });
   } catch (error) {
-    console.error('Error stopping torrent:', (error as Error).message);
+    console.error('Error starting torrent:', (error as Error).message);
     throw error; // Ensure the error is propagated
   }
 }
@@ -323,20 +352,21 @@ async function removeTorrent(hash: string): Promise<void> {
     console.log('Torrent removed successfully from client');
 
     // Remove torrent from database
-    const torrent = await Torrent.findOne({ where: { hash } });
+    const torrent = await prisma.torrent.findUnique({ where: { hash } });
     if (torrent) {
-      // const result = torrent.result; // Get the associated result
-      // await result.update({ downloading: false }); // Update downloading to false
-      await torrent.destroy(); // Remove torrent from database
+      await prisma.torrent.delete({ where: { hash } });
       console.log('Torrent removed successfully from database');
 
-      const results = await Result.findAll({ where: { infoHash: hash } });
+      const results = await prisma.result.findMany({ where: { infoHash: hash } });
       if (!results?.length) {
         console.error('Search Result for torrent not found');
       } else {
-        results.forEach(async (result) => {
-          await result.update({ downloading: false });
-        });
+        for (const result of results) {
+          await prisma.result.update({
+            where: { guid: result.guid },
+            data: { downloading: false },
+          });
+        }
       }
     }
   } catch (error) {
@@ -345,7 +375,6 @@ async function removeTorrent(hash: string): Promise<void> {
   }
 }
 
-
 async function updateTorrentStatuses(params: { hashes?: string[], queryId?: string, category?: string, queryGroupId?: string }): Promise<ITorrent[]> {
   try {
     await client.updateAuthCookie(); // Ensure authentication
@@ -353,61 +382,63 @@ async function updateTorrentStatuses(params: { hashes?: string[], queryId?: stri
     let torrents;
 
     if (params.hashes) {
-      torrents = await Torrent.findAll({
-        where: { hash: params.hashes },
+      torrents = await prisma.torrent.findMany({
+        where: { hash: { in: params.hashes } },
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     } else if (params.queryId) {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            where: { id: params.queryId },
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: {
+                where: { id: parseInt(params.queryId) },
+              }
+            }
+          }
         }
       });
     } else if (params.category) {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         where: { category: params.category },
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     } else if (params.queryGroupId) {
-      const queries = await Query.findAll({
-        where: { queryGroupId: params.queryGroupId }
+      const queries = await prisma.query.findMany({
+        where: { queryGroupId: parseInt(params.queryGroupId) }
       });
       const queryIds = queries.map(query => query.id);
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            where: { id: { [Op.in]: queryIds } },
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: {
+                where: { id: { in: queryIds } },
+              }
+            }
+          }
         }
       });
     } else {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     }
@@ -422,13 +453,11 @@ async function updateTorrentStatuses(params: { hashes?: string[], queryId?: stri
 
       // Update torrent statuses in the database
       for (const updated of updatedTorrents) {
-        await Torrent.update(
-          {
-            ...updated,
-            //hash: torrents ? torrents.find((t) => t?.hash === updated?.hash)?.hash : '',
-          },
-          { where: { hash: updated.hash } }
-        );
+        let utorr = new TorrentFactory(updated);
+        await prisma.torrent.update({
+          where: { hash: updated.hash },
+          data: utorr,
+        });
       }
 
       // Update Torrent Contents in Database
@@ -438,7 +467,6 @@ async function updateTorrentStatuses(params: { hashes?: string[], queryId?: stri
 
       return updatedTorrents.map((updated) => ({
         ...updated,
-        // resultGuid: torrents ? torrents.find((t) => t?.hash === updated?.hash)? : '',
       }));
     }
   } catch (error) {
@@ -447,6 +475,7 @@ async function updateTorrentStatuses(params: { hashes?: string[], queryId?: stri
   }
 }
 
+
 async function getTorrentStatuses(params: { hashes?: string[], queryId?: string, category?: string, queryGroupId?: string }): Promise<ITorrent[]> {
   try {
     await client.updateAuthCookie(); // Ensure authentication
@@ -454,61 +483,63 @@ async function getTorrentStatuses(params: { hashes?: string[], queryId?: string,
     let torrents;
 
     if (params.hashes) {
-      torrents = await Torrent.findAll({
-        where: { hash: params.hashes },
+      torrents = await prisma.torrent.findMany({
+        where: { hash: { in: params.hashes } },
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     } else if (params.queryId) {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            where: { id: params.queryId },
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: {
+                where: { id: parseInt(params.queryId) },
+              }
+            }
+          }
         }
       });
     } else if (params.category) {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         where: { category: params.category },
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     } else if (params.queryGroupId) {
-      const queries = await Query.findAll({
-        where: { queryGroupId: params.queryGroupId }
+      const queries = await prisma.query.findMany({
+        where: { queryGroupId: parseInt(params.queryGroupId) }
       });
       const queryIds = queries.map(query => query.id);
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            where: { id: { [Op.in]: queryIds } },
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: {
+                where: { id: { in: queryIds } },
+              }
+            }
+          }
         }
       });
     } else {
-      torrents = await Torrent.findAll({
+      torrents = await prisma.torrent.findMany({
         include: {
-          model: Result,
-          include: [{
-            model: Query,
-            through: { attributes: [] } // Exclude junction table attributes
-          }]
+          results: {
+            include: {
+              queries: true,
+            }
+          }
         }
       });
     }
@@ -525,8 +556,8 @@ async function getTorrentStatuses(params: { hashes?: string[], queryId?: string,
         const torrent = torrents.find((t) => t?.hash === info?.hash);
         let torrentObj: ITorrent = {
           ...info,
-          queryIds: torrent?.results?.flatMap((r) => r?.queries?.flatMap((q) => q?.id)), // Ensure queryId is included
-          queryGroupIds: torrent?.results?.flatMap((r) => r?.queries?.flatMap((q) => q?.queryGroupId)) // Ensure queryGroupId is included
+          queryIds: torrent?.results?.flatMap((r) => r?.queries?.flatMap((q) => q.id)), // Ensure queryId is included
+          queryGroupIds: torrent?.results?.flatMap((r) => r?.queries?.flatMap((q) => q.queryGroupId)) // Ensure queryGroupId is included
         };
         return torrentObj;
       });
@@ -540,52 +571,63 @@ async function getTorrentStatuses(params: { hashes?: string[], queryId?: string,
 }
 
 const createHardlink = (src: string, dst: string) => {
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.linkSync(src, dst);
-}
+  try {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.linkSync(src, dst);
+  } catch (error: any) {
+    if (error.code === 'EEXIST') {
+      console.log(`Hardlink already exists for ${dst}`);
+    } else {
+      console.error(`Error creating hardlink for ${dst}:`, error);
+    }
+  }
+};
 
 const createSoftlink = (src: string, dst: string) => {
   fs.mkdirSync(path.dirname(dst), { recursive: true });
   fs.symlinkSync(src, dst);
 }
 
-const basePath = settingsService.getSetting("torrentClientBasePath") || "P:/anaNAS"
-const linkPath = settingsService.getSetting("destinationSavePath") || "P:/anaNAS/data/torrents/rain_collector";
 
-const linkTorFilesToDestination = async (torrentHash: string, destinationDir: string) => {
+export const linkTorFilesToDestination = async (torrentHash: string, destinationDir: string) => {
+  const basePath = settingsService.getSetting("torrentClientBasePath") || "P:/anaNAS";
+  const linkPath = settingsService.getSetting("destinationSavePath") || "P:/anaNAS/data/torrents/rain_collector";
   const torrentContent = await client.getTorrentContents(torrentHash);
   const torrentInfo = await client.getTorrentInfos({ hashes: torrentHash });
+
   // Create Hardlink or Softlink for Video Files
-  for (const file of torrentContent) {
-    if (file.size > 10000 && torrentInfo[0].progress > 0) {  // most video files
-      let savePath = torrentInfo[0].save_path
+  for (let idx = 0; idx < torrentContent.length; idx++) {
+    const file = torrentContent[idx];
+    let isVidFile = file.name.match(/\.(mp4|mkv|avi|mpg|mpeg|mov|asf|mp3|hevc)$/)
+    if (isVidFile && file.size > 10000 && file.progress > 99) {  // most video files
+      let savePath = torrentInfo[0].save_path;
       const srcPath = path.join(basePath, savePath, file.name);
       if (file?.name) {
-        let basename = file.name.split(/[\\/]/).join("_")
+        let basename = file.name.split(/[\\/]/).join("_");
         const hardlinkDst = path.join(linkPath, destinationDir, basename);
         createHardlink(srcPath, hardlinkDst);
+
+        // Update the hardlinkPath in the database
+        // await prisma.torrentContent.update({
+        //   where: { id: `${torrentHash}_${idx}` },
+        //   data: { hardlinkPath: hardlinkDst },
+        // });
       }
     }
   }
-}
+};
 
 async function restoreQueue() {
   await pollForTorrentDownloadStart(async (hash: string, resultGuid: string) => {
-    const result = await Result.findOne({
+    const result = await prisma.result.findUnique({
       where: { guid: resultGuid },
-      include: [
-        {
-          model: Query,
-          attributes: ["searchQuery", "id"],
-          include: [
-            {
-              model: QueryGroup,
-              attributes: ["name", "id"]
-            }
-          ],
-          through: { attributes: [] } // Exclude junction table attributes
+      include: {
+        queries: {
+          include: {
+            queryGroup: true,
+          }
         }
-      ]
+      }
     });
 
     let groupName = result?.queries?.[0]?.queryGroup?.name;
@@ -598,8 +640,6 @@ async function restoreQueue() {
     }
   });
 }
-
-
 // Call this function on app startup
 restoreQueue().catch(error => console.error('Error restoring queue:', error.message));
 
@@ -611,5 +651,5 @@ export default {
   removeTorrent,
   updateTorrentStatuses,
   getTorrentStatuses,
-  linkTorFilesToDestination
+  linkTorFilesToDestination,
 };

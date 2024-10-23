@@ -1,4 +1,6 @@
-import { GlobalSettings } from '../models/GlobalSettings'; // Adjust the path as necessary
+import { PrismaClient } from '@prisma/client';
+
+// Define the allowed keys for settings
 export const allowedKeys = [
   'torrentClientBasePath',
   'torrentClientSavePath',
@@ -7,16 +9,18 @@ export const allowedKeys = [
   'defaultTorrentCategory',
   'defaultRenameTemplate',
   'eventLoopInterval',
-  'minDlSpeed'
+  'minDlSpeed',
+  'sequentialDownload'
 ] as const;
 
 export type AllowedKey = (typeof allowedKeys)[number];
 
 class SettingsService {
   private settings: { [key: string]: string } = {};
+  private prisma = new PrismaClient();
 
   async initialize() {
-    const settingsArray = await GlobalSettings.findAll();
+    const settingsArray = await this.prisma.globalSettings.findMany();
     settingsArray.forEach(setting => {
       this.settings[setting.key] = setting.value;
     });
@@ -27,7 +31,11 @@ class SettingsService {
   }
 
   async setSetting(key: AllowedKey, value: string): Promise<void> {
-    await GlobalSettings.upsert({ key, value });
+    await this.prisma.globalSettings.upsert({
+      where: { key },
+      update: { value },
+      create: { key, value },
+    });
     this.settings[key] = value;
   }
 
