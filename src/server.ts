@@ -817,10 +817,12 @@ app.post('/api/global-settings', async (req: Request, res: Response) => {
 
 // Initialize and start server
 (async () => {
-  await prisma.$connect();
-  await initializeEventLoops();
-  await settingsService.initialize(); // Load the settings
+  // await prisma.$connect();
+  // await initializeEventLoops();
+  // await settingsService.initialize(); // Load the settings
   app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
+    setInterval(() => { console.log("TESTING"); }, 4000)
+    console.log(process.env)
   });
 })();
